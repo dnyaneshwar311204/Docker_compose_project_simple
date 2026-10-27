@@ -1,0 +1,303 @@
+**************DOCKER COMPOSE APPLICATION PROJECT*********************
+
+							Flask Web Application + MySQL Database
+
+Complete setup, configuration, deployment, testing,
+troubleshooting, and cleanup guide
+
+
+1. Project Overview
+This practice project runs a Python Flask web application and a MySQL database as separate Docker containers. Docker Compose defines the services, their configuration, the private project network, and persistent database storage.
+Objectives
+* Build a Docker image for a Flask application.
+* Run the application and MySQL database in separate containers.
+* Connect the application to MySQL using environment variables and the Compose service name.
+* Persist database files using a named Docker volume.
+* Learn common Docker Compose commands for deployment, logs, testing, and cleanup.
+
+2. Architecture
+
+Browser
+   |
+   | HTTP: host port 5000
+   v
+Flask application container (myapp)
+   |
+   | MySQL connection on the Compose network
+   | hostname: db, port: 3306
+   v
+MySQL database container (mydb)
+   |
+   v
+Named volume: myproject_db_data
+The app is published on host port 5000. MySQL is not published to the host in this configuration; the application reaches it using the Compose service name db on the internal Compose network.
+
+3. Prerequisites
+* A Linux machine, VM, or server with Docker Engine installed.
+* Docker Compose v2 available as the `docker compose` command.
+* A user with permission to run Docker commands (or use `sudo`).
+* Internet access on the first build to download the Python base image, Python packages, and MySQL image.
+* For remote access, network/firewall rules must allow TCP port 5000.
+
+Verify Docker
+	#docker --version
+	#docker compose version
+	#sudo systemctl enable --now docker
+	#sudo systemctl status docker
+
+The systemctl commands apply to Linux systems that use systemd. On some systems, Docker commands may require sudo.
+
+4. Create the Project Directory
+
+	#mkdir myproject
+	#cd myproject
+
+Create the following four files inside this directory:
+	#myproject/
+		+-- compose.yaml
+		+-- Dockerfile
+		+-- app.py
+	+-- requirements.txt
+
+5. Configuration Files
+	
+	[ Create the file with `vi compose.yaml`, paste the content below, then save using Esc, :wq, Enter.]
+	5.1 #vi compose.yaml
+	
+services:
+  app:
+    build: .
+    container_name: myapp
+    ports:
+      - "5000:5000"
+    environment:
+      DB_HOST: db
+      DB_USER: appuser
+      DB_PASSWORD: apppass
+      DB_NAME: appdb
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.4
+    container_name: mydb
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: appdb
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: apppass
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  db_data:
+Key points: `build: .` builds the application image from the current directory. `ports` maps host port 5000 to container port 5000. `DB_HOST: db` uses the Compose service name as the database hostname. The health check makes Compose wait for MySQL to become healthy before starting the app. `db_data` persists MySQL data.
+	5.2 Dockerfile
+		Create with `#vi Dockerfile`.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+`FROM` selects the Python base image; `WORKDIR` sets the working directory; `COPY` adds project files; `RUN` installs Python dependencies during image build; `EXPOSE` documents the application port; `CMD` starts Flask.
+	5.3 requirements.txt
+	Create with `#vi requirements.txt`.
+	
+flask
+mysql-connector-python
+Flask serves the web page. mysql-connector-python lets the Python application connect to MySQL.
+5.4 app.py
+Create with `vi app.py`.
+import os
+from flask import Flask
+import mysql.connector
+
+app = Flask(__name__)
+
+def get_db_connection():
+    return mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"]
+    )
+
+@app.route("/")
+def home():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        cursor.execute("SELECT VERSION()")
+        version = cursor.fetchone()[0]
+
+        cursor.close()
+        connection.close()
+
+        return f"""
+        <html>
+        <body style="background:#e0f2fe;text-align:center;
+                     font-family:Arial;padding:60px">
+            <h1 style="color:#2563eb">My Docker Application</h1>
+            <h2 style="color:green">Application is running!</h2>
+            <p>Database connection successful.</p>
+            <p>MySQL version: {version}</p>
+        </body>
+        </html>
+        """
+    except Exception:
+        app.logger.exception("Database connection failed")
+        return "Database connection failed. Check application logs.", 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+When a browser requests `/`, the app connects to MySQL, runs `SELECT VERSION()`, and displays the result. If the database connection fails, the app returns HTTP 500 and logs the error to the application logs.
+
+6. Validate the Compose Configuration
+# Confirm you are in the project directory
+	#pwd
+	#ls -l
+
+# Validate and display the resolved Compose configuration
+	#docker compose config
+	
+If `docker compose config` reports a YAML or configuration error, correct the file before starting the project.
+
+7. Build and Start the Project
+	
+	7.1 Build images and start containers
+		#docker compose up -d --build
+		This command builds the Flask image, pulls the MySQL image if needed, creates the project network and volume, and starts both services in the background. The first run may take several minutes.
+	
+	7.2 Check service status
+		#docker compose ps
+		#docker ps .............[ Show running containers ]
+		#docker compose ps -a
+		Wait for the database health check to pass. The application should then start.
+
+	7.3 Review logs
+		#docker compose logs app
+		#docker compose logs db
+		#docker compose logs -f app
+		#docker compose logs --tail=100 app
+			Press Ctrl+C to stop following logs; this does not stop the containers.
+
+8. Test the Application
+
+	8.1 Browser test
+	* On the Docker host, open: http://localhost:5000
+	* From another computer, open: http://SERVER_IP:5000, replacing SERVER_IP with the server's actual IP address.
+	The page should show "Application is running!", "Database connection successful", and the MySQL version.
+	
+	8.2 HTTP test from the Docker host
+		#curl -i http://localhost:5000
+
+	8.3 Test the database directly
+		#docker exec -it mydb mysql -u appuser -p appdb
+When prompted, enter the practice password `apppass`, then run:
+
+SHOW DATABASES;
+USE appdb;
+SHOW TABLES;
+SELECT VERSION();
+EXIT;
+
+The project checks database connectivity and version. It does not create any application tables.
+
+9. Common Docker Commands
+Command#docker ps -a .......[ Show all containers ]#docker images ...........[ List images ]#docker network ls ........[ List networks ]#docker volume ls ........[List volumes ]
+#docker compose stop .........[ Stop services without removing containers ]#docker compose start ......[ Start stopped services ]#docker compose restart ........[ Restart services ]#docker compose up -d --build ...........[ Rebuild and start ]#docker compose down ...........[ Remove containers and project network ]#docker logs myapp ........[ Application logs ]#docker logs mydb ............[ Database logs ]#docker exec -it myapp /bin/sh .........[ Shell in app container ]#docker exec -it mydb bash ..........[ Shell in database container ]
+10. Persistent Storage
+	#docker volume ls
+	#docker volume inspect myproject_db_data
+
+Compose creates a named volume for MySQL data. Its actual name commonly includes the Compose project name, such as `myproject_db_data`. The volume is mounted inside the MySQL container at `/var/lib/mysql`. Removing a container does not normally remove the named volume.
+
+11. Networking
+* Compose creates a private network for the services.
+* The app connects to the database using hostname `db` and MySQL's default port 3306.
+* Port mapping `5000:5000` publishes the Flask app to the Docker host.
+* The database port is not published to the host in this example.
+
+	#docker network ls
+	#docker compose exec app sh
+
+# Inside the app container, leave with:
+exit
+
+12. Stop, Restart, and Remove
+	#Stop the services
+	#docker compose stop
+
+	Start the stopped services
+	#docker compose start
+	
+	Stop and remove containers and the project network
+	#docker compose down
+
+This normally preserves the named database volume.
+
+	Remove containers and the database volume
+	#docker compose down -v
+
+WARNING: The `-v` option removes the Compose named volume and deletes the stored database data. Use it only when you intend to reset the practice database.
+
+13. Troubleshooting
+
+Port 5000 is already in use
+
+Check with `sudo ss -ltnp | grep :5000`. Stop the conflicting service or change the host side of the port mapping, for example `5001:5000`, then recreate the app.
+App reports database connection failed
+
+Check `docker compose ps`, `docker compose logs db`, and `docker compose logs app`. Confirm the database is healthy and the DB_HOST, DB_USER, DB_PASSWORD, and DB_NAME values match.
+MySQL container keeps restarting
+
+Read `docker compose logs db`. Check configuration and available disk space. Existing data in an old volume may retain previous initialization settings.
+Cannot access from another computer
+
+Use the correct server IP, check that the app is running, and allow TCP port 5000 in the Linux firewall and cloud security group.
+Changes to app.py are not visible
+
+Rebuild and recreate the app with `docker compose up -d --build app`.
+Docker command permission denied
+Try `sudo docker ...`. Adding a user to the docker group gives powerful root-equivalent access; do so only if appropriate.
+
+14. Security Notes
+
+* The passwords in this document are simple practice credentials only. Do not use them in production.
+* For real deployments, use stronger credentials and a secrets-management approach rather than storing passwords directly in the Compose file.
+* Do not expose MySQL publicly unless there is a specific, secured requirement.
+* Flask's built-in development server is suitable for learning, not production. Use a production WSGI server and an appropriate deployment setup for real workloads.
+* Keep Docker Engine, base images, and dependencies updated.
+
+15. Quick Deployment Checklist
+* ? Docker Engine and Docker Compose are installed.
+* ? All four files are saved in the `myproject` directory.
+* ? `docker compose config` completes successfully.
+* ? `docker compose up -d --build` completes successfully.
+* ? `docker compose ps` shows the app running and database healthy.
+* ? `docker compose logs app` shows no startup errors.
+* ? `curl -i http://localhost:5000` returns the application page.
+* ? Database connection success and MySQL version are displayed.
+
+16. Summary
+This project demonstrates a two-container architecture: a Flask application and a MySQL database. Docker Compose manages their lifecycle, the service name `db` enables internal communication, and the named volume preserves database data between container recreations. Use `docker compose up -d --build` to deploy and `docker compose down` to remove containers while preserving the named volume.
+DOCKER PROJECT DOCUMENTATION
+
+Practice project | Flask Application + MySQL Database
+
